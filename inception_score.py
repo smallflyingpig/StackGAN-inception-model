@@ -25,9 +25,11 @@ import numpy as np
 import tensorflow as tf
 
 
+
 import math
 import os.path
 import scipy.misc
+from scipy import linalg
 # import time
 # import scipy.io as sio
 # from datetime import datetime
@@ -47,6 +49,12 @@ tf.app.flags.DEFINE_string('checkpoint_dir',
 tf.app.flags.DEFINE_string('image_folder', 
 							'/Users/han/Documents/CUB_200_2011/CUB_200_2011/images',
 							"""Path where to load the images """)
+tf.app.flags.DEFINE_string('image_folder_real', 
+							'',
+							"""Path where to load the images """)
+tf.app.flags.DEFINE_string('type', 
+							'IS',
+							"""IS or FID (FID is not supported) """)                            
 
 tf.app.flags.DEFINE_integer('num_classes', 50,      # 20 for flowers
                             """Number of classes """)
@@ -80,7 +88,7 @@ def preprocess(img):
     return np.expand_dims(img, 0)
 
 
-def get_inception_score(sess, images, pred_op):
+def get_inception_score(sess, images, probe):
     splits = FLAGS.splits
     # assert(type(images) == list)
     assert(type(images[0]) == np.ndarray)
@@ -107,7 +115,7 @@ def get_inception_score(sess, images, pred_op):
         # inp = inps[(i * bs):min((i + 1) * bs, len(inps))]
         inp = np.concatenate(inp, 0)
         #  print('inp', inp.shape)
-        pred = sess.run(pred_op, {'inputs:0': inp})
+        pred = sess.run(probe, {'inputs:0': inp})
         preds.append(pred)
         # if i % 100 == 0:
         #     print('Batch ', i)
@@ -123,7 +131,50 @@ def get_inception_score(sess, images, pred_op):
         kl = np.mean(np.sum(kl, 1))
         scores.append(np.exp(kl))
     print('mean:', "%.2f" % np.mean(scores), 'std:', "%.2f" % np.std(scores))
+
     return np.mean(scores), np.std(scores)
+
+
+def compute_frethet_distance(predictions_g, predictions_r, eps=1e-6):
+    '''
+    reference:https://github.com/mseitzer/pytorch-fid/blob/master/fid_score.py
+    '''
+    mu_g, sigma_g = np.mean(predictions_g, axis=0), np.cov(predictions_g, rowvar=False)
+    mu_r, sigma_r = np.mean(predictions_r, axis=0), np.cov(predictions_r, rowvar=False)
+
+    mu1 = np.atleast_1d(mu_g)
+    mu2 = np.atleast_1d(mu_r)
+
+    sigma1 = np.atleast_2d(sigma_g)
+    sigma2 = np.atleast_2d(sigma_r)
+
+    assert mu1.shape == mu2.shape, \
+        'Training and test mean vectors have different lengths'
+    assert sigma1.shape == sigma2.shape, \
+        'Training and test covariances have different dimensions'
+
+    diff = mu1 - mu2
+
+    # Product might be almost singular
+    covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)
+    if not np.isfinite(covmean).all():
+        msg = ('fid calculation produces singular product; '
+               'adding %s to diagonal of cov estimates') % eps
+        print(msg)
+        offset = np.eye(sigma1.shape[0]) * eps
+        covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
+
+    # Numerical error might give slight imaginary component
+    if np.iscomplexobj(covmean):
+        if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
+            m = np.max(np.abs(covmean.imag))
+            raise ValueError('Imaginary component {}'.format(m))
+        covmean = covmean.real
+
+    tr_covmean = np.trace(covmean)
+
+    return (diff.dot(diff) + np.trace(sigma1) +
+            np.trace(sigma2) - 2 * tr_covmean)
 
 
 def load_data(fullpath):
@@ -186,11 +237,11 @@ def inference(images, num_classes, for_training=False, restore_logits=True,
 
     # Grab the logits associated with the side head. Employed during training.
     auxiliary_logits = endpoints['aux_logits']
+    pool_3 = endpoints['pool_3']
 
-    return logits, auxiliary_logits
+    return logits, auxiliary_logits, pool_3
 
-
-def main(unused_argv=None):
+def calculate_inception_score():
     """Evaluate model on Dataset for a number of steps."""
     with tf.Graph().as_default():
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -208,7 +259,7 @@ def main(unused_argv=None):
                     name='inputs')
                 # print(inputs)
 
-                logits, _ = inference(inputs, num_classes)
+                logits, _, _ = inference(inputs, num_classes)
                 # calculate softmax after remove 0 which reserve for BG
                 known_logits = \
                     tf.slice(logits, [0, 1],
@@ -227,7 +278,91 @@ def main(unused_argv=None):
                 get_inception_score(sess, images, pred_op)
 
 
+def get_FID_features(sess, images, pool_3):
+    splits = FLAGS.splits
+    # assert(type(images) == list)
+    assert(type(images[0]) == np.ndarray)
+    assert(len(images[0].shape) == 3)
+    assert(np.max(images[0]) > 10)
+    assert(np.min(images[0]) >= 0.0)
+    bs = FLAGS.batch_size
+    pool_3_all = []
+    num_examples = len(images)
+    n_batches = int(math.floor(float(num_examples) / float(bs)))
+    indices = list(np.arange(num_examples))
+    np.random.shuffle(indices)
+    for i in range(n_batches):
+        inp = []
+        # print('i*bs', i*bs)
+        for j in range(bs):
+            if (i*bs + j) == num_examples:
+                break
+            img = images[indices[i*bs + j]]
+            # print('*****', img.shape)
+            img = preprocess(img)
+            inp.append(img)
+        # print("%d of %d batches" % (i, n_batches))
+        # inp = inps[(i * bs):min((i + 1) * bs, len(inps))]
+        inp = np.concatenate(inp, 0)
+        #  print('inp', inp.shape)
+        pred = sess.run(pool_3, {'inputs:0': inp})
+        pool_3_all.append(pred)
+        # if i % 100 == 0:
+        #     print('Batch ', i)
+        #     print('inp', inp.shape, inp.max(), inp.min())
+    preds = np.concatenate(pool_3_all, 0)
+    return preds
+
+    
+
+
+def calculate_FID():
+    if FLAGS.image_folder_real == '':
+        print("FID need the real images, but they are not provided!")
+        return
+    fullpath_fake = FLAGS.image_folder
+    fullpath_real = FLAGS.image_folder_real
+    with tf.Graph().as_default():
+        config = tf.ConfigProto(allow_soft_placement=True)
+        config.gpu_options.allow_growth = True
+        with tf.Session(config=config) as sess:
+            with tf.device("/gpu:%d" % FLAGS.gpu):
+                # Number of classes in the Dataset label set plus 1.
+                # Label 0 is reserved for an (unused) background class.
+                num_classes = FLAGS.num_classes + 1
+
+                # Build a Graph that computes the logits predictions from the
+                # inference model.
+                inputs = tf.placeholder(
+                    tf.float32, [FLAGS.batch_size, 299, 299, 3],
+                    name='inputs')
+                # print(inputs)
+
+                _, _, pool_3 = inference(inputs, num_classes)
+                # calculate softmax after remove 0 which reserve for BG
+                
+                # Restore the moving average version of the
+                # learned variables for eval.
+                variable_averages = \
+                    tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY)
+                variables_to_restore = variable_averages.variables_to_restore()
+                saver = tf.train.Saver(variables_to_restore)
+                saver.restore(sess, FLAGS.checkpoint_dir)
+                print('Restore the model from %s).' % FLAGS.checkpoint_dir)
+                images_fake, images_real = load_data(fullpath_fake), load_data(fullpath_real)
+                features_fake, features_real = get_FID_features(sess, images_fake, pool_3), get_FID_features(sess, images_real, pool_3)
+                fid = compute_frethet_distance(features_fake, features_real)
+                print("FID:{:.4f}".format(fid))
+
+def main(unused_argv=None):
+    if FLAGS.type == 'IS':
+        calculate_inception_score()
+    elif FLAGS.type == 'FID':
+        calculate_FID()
+    else:
+        print("type is not supported")
 
 
 if __name__ == '__main__':
+
     tf.app.run()

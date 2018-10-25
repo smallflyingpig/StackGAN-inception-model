@@ -327,6 +327,7 @@ def inception_v3(inputs,
           # 1000
           end_points['logits'] = logits
           end_points['predictions'] = tf.nn.softmax(logits, name='predictions')
+          end_points['pool_3'] = net
       return logits, end_points
 
 
