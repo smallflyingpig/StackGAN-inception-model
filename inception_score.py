@@ -29,6 +29,7 @@ import tensorflow as tf
 import math
 import os.path
 import scipy.misc
+import tqdm 
 from scipy import linalg
 # import time
 # import scipy.io as sio
@@ -43,7 +44,7 @@ else:
 FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_string('checkpoint_dir',
-                           './inception_finetuned_models/birds_valid299/model.ckpt-5000',
+                           './inception_finetuned_models/birds_valid299/model.ckpt',
                            """Path where to read model checkpoints.""")
 
 tf.app.flags.DEFINE_string('image_folder', 
@@ -80,7 +81,7 @@ def preprocess(img):
     if len(img.shape) == 2:
         img = np.resize(img, (img.shape[0], img.shape[1], 3))
     img = scipy.misc.imresize(img, (299, 299, 3),
-                              interp='bilinear')
+                              interp='lanczos')
     img = img.astype(np.float32)
     # [0, 255] --> [0, 1] --> [-1, 1]
     img = img / 127.5 - 1.
@@ -101,7 +102,8 @@ def get_inception_score(sess, images, probe):
     n_batches = int(math.floor(float(num_examples) / float(bs)))
     indices = list(np.arange(num_examples))
     np.random.shuffle(indices)
-    for i in range(n_batches):
+    loader_bar = tqdm.tqdm(range(n_batches))
+    for i in loader_bar:
         inp = []
         # print('i*bs', i*bs)
         for j in range(bs):
@@ -120,6 +122,7 @@ def get_inception_score(sess, images, probe):
         # if i % 100 == 0:
         #     print('Batch ', i)
         #     print('inp', inp.shape, inp.max(), inp.min())
+    loader_bar.close()
     preds = np.concatenate(preds, 0)
     scores = []
     for i in range(splits):
@@ -138,7 +141,7 @@ def get_inception_score(sess, images, probe):
 
 
 def load_data(fullpath):
-    print(fullpath)
+    print("load data from: {}".format(fullpath))
     images = []
     for path, subdirs, files in os.walk(fullpath):
         for name in files:
@@ -197,50 +200,6 @@ def inference(images, num_classes, for_training=False, restore_logits=True,
 
     # Grab the logits associated with the side head. Employed during training.
     auxiliary_logits = endpoints['aux_logits']
-    pool_3 = endpoints['pool_3']
-
-    return logits, auxiliary_logits, pool_3
-
-def inference_FID(images, num_classes=1000, for_training=False, restore_logits=True,
-              scope=None):
-    """Build Inception v3 model architecture.
-
-    See here for reference: http://arxiv.org/abs/1512.00567
-
-    Args:
-    images: Images returned from inputs() or distorted_inputs().
-    num_classes: number of classes
-    for_training: If set to `True`, build the inference model for training.
-      Kernels that operate differently for inference during training
-      e.g. dropout, are appropriately configured.
-    restore_logits: whether or not the logits layers should be restored.
-      Useful for fine-tuning a model with different num_classes.
-    scope: optional prefix string identifying the ImageNet tower.
-
-    Returns:
-    Logits. 2-D float Tensor.
-    Auxiliary Logits. 2-D float Tensor of side-head. Used for training only.
-    """
-    # Parameters for BatchNorm.
-    batch_norm_params = {
-      # Decay for the moving averages.
-      'decay': BATCHNORM_MOVING_AVERAGE_DECAY,
-      # epsilon to prevent 0s in variance.
-      'epsilon': 0.001,
-    }
-    # Set weight_decay for weights in Conv and FC layers.
-    with slim.arg_scope([slim.ops.conv2d, slim.ops.fc], weight_decay=0.00004):
-        with slim.arg_scope([slim.ops.conv2d],
-                            stddev=0.1,
-                            activation=tf.nn.relu,
-                            batch_norm_params=batch_norm_params):
-            logits, endpoints = slim.inception_v3_raw.inception_v3(
-              images,
-              is_training=for_training,
-              scope=scope)
-
-    # Grab the logits associated with the side head. Employed during training.
-    auxiliary_logits = endpoints['AuxLogits']
     pool_3 = endpoints['pool_3']
 
     return logits, auxiliary_logits, pool_3
