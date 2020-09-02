@@ -31,6 +31,8 @@ import os.path
 import scipy.misc
 import tqdm 
 from scipy import linalg
+
+from PIL import Image
 # import time
 # import scipy.io as sio
 # from datetime import datetime
@@ -145,14 +147,15 @@ def load_data(fullpath):
     images = []
     for path, subdirs, files in os.walk(fullpath):
         for name in files:
-            if name.rfind('jpg') != -1 or name.rfind('png') != -1:
+            if os.path.splitext(name)[-1] in ['.jpg', '.jpeg', '.png', '.j2k']:
                 filename = os.path.join(path, name)
                 # print('filename', filename)
                 # print('path', path, '\nname', name)
                 # print('filename', filename)
                 if os.path.isfile(filename):
-                    img = scipy.misc.imread(filename)
-                    images.append(img)
+                    img = Image.open(filename)
+                    images.append(np.array(img))
+                    img.close()
     print('images', len(images), images[0].shape)
     return images
 
@@ -235,8 +238,9 @@ def calculate_inception_score():
                     tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY)
                 variables_to_restore = variable_averages.variables_to_restore()
                 saver = tf.train.Saver(variables_to_restore)
-                saver.restore(sess, FLAGS.checkpoint_dir)
-                print('Restore the model from %s).' % FLAGS.checkpoint_dir)
+                if FLAGS.checkpoint_dir != '':
+                    saver.restore(sess, FLAGS.checkpoint_dir)
+                    print('Restore the model from %s).' % FLAGS.checkpoint_dir)
                 images = load_data(fullpath)
                 get_inception_score(sess, images, pred_op)
 
