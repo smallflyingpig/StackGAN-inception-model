@@ -28,8 +28,8 @@ import tensorflow as tf
 
 import math
 import os.path
-import scipy.misc
 import tqdm 
+import cv2
 from scipy import linalg
 
 from PIL import Image
@@ -82,11 +82,11 @@ def preprocess(img):
     # img = Image.fromarray(img, 'RGB')
     if len(img.shape) == 2:
         img = np.resize(img, (img.shape[0], img.shape[1], 3))
-    img = scipy.misc.imresize(img, (299, 299, 3),
-                              interp='lanczos')
+    img = cv2.resize(src=img, dsize=(int(299), int(299)),
+                              interpolation=cv2.INTER_LINEAR)
     img = img.astype(np.float32)
     # [0, 255] --> [0, 1] --> [-1, 1]
-    img = img / 127.5 - 1.
+    img = img / 127.5 - 1.0
     # print('img', img.shape, img.max(), img.min())
     return np.expand_dims(img, 0)
 
@@ -140,8 +140,6 @@ def get_inception_score(sess, images, probe):
     return np.mean(scores), np.std(scores)
 
 
-
-
 def load_data(fullpath):
     print("load data from: {}".format(fullpath))
     images = []
@@ -156,7 +154,8 @@ def load_data(fullpath):
                     img = Image.open(filename)
                     images.append(np.array(img))
                     img.close()
-    print('images', len(images), images[0].shape)
+    print("image total num: ", len(images))
+    print('images shape: ', images[0].shape)
     return images
 
 
